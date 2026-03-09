@@ -1,0 +1,14 @@
+# Secrets
+.env
+
+# Environments
+.tgvenv/
+venv/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Database (if using local sqlite)
+*.sqlite3
