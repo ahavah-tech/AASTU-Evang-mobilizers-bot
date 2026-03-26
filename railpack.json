@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "python",
+  "packages": {
+    "python": "3.11"
+  },
+  "buildAptPackages": [
+    "build-essential",
+    "default-libmysqlclient-dev",
+    "pkg-config"
+  ],
+  "deploy": {
+    "startCommand": "python evangtelegrambot.py"
+  }
+}
