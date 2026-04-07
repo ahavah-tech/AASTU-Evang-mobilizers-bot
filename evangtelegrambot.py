@@ -1,7 +1,8 @@
 import os
 import telebot
-from telebot.types import KeyboardButton, ReplyKeyboardMarkup
-from dotenv import load_dotenv  
+from telebot.types import KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from dotenv import load_dotenv 
+
 
 # DATABASE CONFIG
 import mysql.connector
@@ -27,6 +28,7 @@ load_dotenv()
 # bot tokens
 API_KEY = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(API_KEY)
+MENTOR_CHAT_ID = 8067334396
 
 def send_daily_lessons():
     db = None
@@ -140,45 +142,77 @@ STUDY_FILES_MAP = {
     "አብ ፣ ወልድና መንፈስ ቅዱስ የተለያዩ አካላት አይደሉምን" : "BQACAgQAAyEFAATkiwQeAAMSacTbMSGtXjsgRvk8DAQo4ud2cRwAAhEdAAIHdihS7tw9h3oYsWs6BA"
 }
 
+
+def get_next_lesson_markup():
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("ቀጣዩን ቀን አሳየኝ (Next Day) ➡️", callback_data="next_bible_day"))
+    return markup
+
 def start_bible_study(message):
     user_id = message.chat.id
     book = "የዮሐንስ ወንጌል"
-    
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
 
     try:
-        # 1. Fetch Day 1/Chapter 1 content
-        cursor.execute(
-            "SELECT chapter, teaching_content FROM study_content WHERE book_name = %s AND day_number = 1", 
-            (book,)
-        )
+        cursor.execute("SELECT chapter, teaching_content FROM study_content WHERE book_name = %s AND day_number = 1", (book,))
         lesson = cursor.fetchone()
 
         if lesson:
-            # IMPORTANT: Set last_sent_at to NOW() so the 24-hour timer starts from this exact moment
             upsert_query = """
             INSERT INTO user_progress (telegram_id, active_book, current_day, last_sent_at, subscription_status)
             VALUES (%s, %s, 1, NOW(), 'active')
-            ON DUPLICATE KEY UPDATE 
-            active_book = %s, current_day = 1, last_sent_at = NOW(), subscription_status = 'active'
+            ON DUPLICATE KEY UPDATE active_book = %s, current_day = 1, last_sent_at = NOW(), subscription_status = 'active'
             """
             cursor.execute(upsert_query, (user_id, book, book))
             db.commit()
 
-            # 3. Send the first lesson
             header = f"📖 *{lesson['chapter']}*\n\n"
-            bot.send_message(user_id, header + lesson['teaching_content'], parse_mode="Markdown")
-            bot.send_message(user_id, "✨ የዛሬው ጥናት ተጠናቋል። ነገ በዚሁ ሰዓት ቀጣዩን ክፍል እንልክልዎታለን!")
+            bot.send_message(user_id, header + lesson['teaching_content'], parse_mode="Markdown", reply_markup=get_next_lesson_markup())
         else:
-            bot.send_message(user_id, "ይቅርታ፣ የጥናት ይዘቱ አልተገኘም። እባክዎ አማካሪ ያነጋግሩ።")
-
-    except Exception as e:
-        print(f"Database Error: {e}")
-        bot.send_message(user_id, "⚠️ የቴክኒክ ችግር አጋጥሟል። እባክዎ ቆይተው ይሞክሩ።")
+            bot.send_message(user_id, "ይቅርታ፣ የጥናት ይዘቱ አልተገኘም።")
     finally:
         cursor.close()
         db.close()
+
+@bot.callback_query_handler(func=lambda call: call.data == "next_bible_day")
+def handle_next_day(call):
+    user_id = call.from_user.id
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute("SELECT active_book, current_day FROM user_progress WHERE telegram_id = %s", (user_id,))
+        user = cursor.fetchone()
+
+        if not user:
+            bot.answer_callback_query(call.id, "እባክዎ መጀመሪያ ጥናቱን ይጀምሩ።")
+            return
+
+        next_day = user['current_day'] + 1
+        cursor.execute("SELECT chapter, teaching_content FROM study_content WHERE book_name = %s AND day_number = %s", (user['active_book'], next_day))
+        content = cursor.fetchone()
+
+        if content:
+            cursor.execute("UPDATE user_progress SET current_day = %s, last_sent_at = NOW() WHERE telegram_id = %s", (next_day, user_id))
+            db.commit()
+
+            text = f"📖 *{content['chapter']}*\n\n{content['teaching_content']}"
+            bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=get_next_lesson_markup())
+            
+            # Remove button from old message
+            bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=None)
+            bot.answer_callback_query(call.id)
+        else:
+            cursor.execute("UPDATE user_progress SET subscription_status = 'completed' WHERE telegram_id = %s", (user_id,))
+            db.commit()
+            bot.send_message(user_id, "🎉 እንኳን ደስ አሎት! የዮሐንስ ወንጌል ጥናትዎን አጠናቅቀዋል።")
+            bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=None)
+            bot.answer_callback_query(call.id)
+    finally:
+        cursor.close()
+        db.close()
+
 
 # Welcome page on the bot
 @bot.message_handler(commands=['start'])
@@ -461,7 +495,6 @@ https://www.churchofjesuschrist.org/comeuntochrist/believe/jesus/life-and-missio
         
         try:
             bot.send_chat_action(chat_id, 'upload_document')
-            
             bot.send_document(chat_id, file_id, caption=f"📄 {message.text}")
             
         except Exception as e:
