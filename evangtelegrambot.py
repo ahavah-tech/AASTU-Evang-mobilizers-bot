@@ -174,10 +174,12 @@ def start_bible_study(message):
     cursor = db.cursor(dictionary=True)
 
     try:
+        # Fetch Day 1 specifically
         cursor.execute("SELECT chapter, teaching_content FROM study_content WHERE book_name = %s AND day_number = 1", (book,))
         lesson = cursor.fetchone()
 
         if lesson:
+            # Reset user to Day 1 in the progress table
             upsert_query = """
             INSERT INTO user_progress (telegram_id, active_book, current_day, last_sent_at, subscription_status)
             VALUES (%s, %s, 1, NOW(), 'active')
@@ -186,10 +188,11 @@ def start_bible_study(message):
             cursor.execute(upsert_query, (user_id, book, book))
             db.commit()
 
-            header = f"📖 *{lesson['chapter']}*\n\n"
-            bot.send_message(user_id, header + lesson['teaching_content'], parse_mode="Markdown", reply_markup=get_next_lesson_markup())
+            # Send text + Inline Button
+            text = f"📖 *{lesson['chapter']}*\n\n{lesson['teaching_content']}"
+            bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=get_next_lesson_markup())
         else:
-            bot.send_message(user_id, "ይቅርታ፣ የጥናት ይዘቱ አልተገኘም።")
+            bot.send_message(user_id, "⚠️ የጥናት ይዘቱ አልተገኘም። እባክዎ አስተዳዳሪውን ያነጋግሩ።")
     finally:
         cursor.close()
         db.close()
@@ -201,6 +204,7 @@ def handle_next_day(call):
     cursor = db.cursor(dictionary=True)
 
     try:
+        # Find current progress
         cursor.execute("SELECT active_book, current_day FROM user_progress WHERE telegram_id = %s", (user_id,))
         user = cursor.fetchone()
 
@@ -209,29 +213,42 @@ def handle_next_day(call):
             return
 
         next_day = user['current_day'] + 1
-        cursor.execute("SELECT chapter, teaching_content FROM study_content WHERE book_name = %s AND day_number = %s", (user['active_book'], next_day))
+        
+        # Fetch the next day's content
+        cursor.execute(
+            "SELECT chapter, teaching_content FROM study_content WHERE book_name = %s AND day_number = %s", 
+            (user['active_book'], next_day)
+        )
         content = cursor.fetchone()
 
         if content:
-            cursor.execute("UPDATE user_progress SET current_day = %s, last_sent_at = NOW() WHERE telegram_id = %s", (next_day, user_id))
+            # Update DB to the new day
+            cursor.execute(
+                "UPDATE user_progress SET current_day = %s, last_sent_at = NOW() WHERE telegram_id = %s", 
+                (next_day, user_id)
+            )
             db.commit()
 
+            # Send next lesson
             text = f"📖 *{content['chapter']}*\n\n{content['teaching_content']}"
             bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=get_next_lesson_markup())
             
-            # Remove button from old message
+            # CLEANUP: Remove button from the message the user just clicked
             bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=None)
             bot.answer_callback_query(call.id)
         else:
+            # End of study reached
             cursor.execute("UPDATE user_progress SET subscription_status = 'completed' WHERE telegram_id = %s", (user_id,))
             db.commit()
             bot.send_message(user_id, "🎉 እንኳን ደስ አሎት! የዮሐንስ ወንጌል ጥናትዎን አጠናቅቀዋል።")
             bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=None)
             bot.answer_callback_query(call.id)
+
+    except Exception as e:
+        print(f"Error: {e}")
     finally:
         cursor.close()
         db.close()
-
 
 # Welcome page on the bot
 @bot.message_handler(commands=['start'])
